@@ -1,143 +1,70 @@
 import streamlit as st
 import random
 import numpy as np
-from collections import deque
-from sklearn.preprocessing import LabelEncoder
+import pandas as pd
 from xgboost import XGBClassifier
+from sklearn.preprocessing import LabelEncoder
 
-st.set_page_config(page_title="AI Dự đoán hướng sút", layout="centered")
-st.title("⚽ AI Dự Đoán Hướng Sút - XGBoost & Tự Học Theo 3 Lượt Gần Nhất")
+# Set page config
+st.set_page_config(page_title="⚽ AI Dự Đoán Penalty", page_icon="⚽")
 
-# Khởi tạo session
-if "kick_history" not in st.session_state:
-    st.session_state.kick_history = deque(maxlen=100)
-    st.session_state.goalie_jump_history = deque(maxlen=100)
-    st.session_state.result = ""
-    st.session_state.encoder = LabelEncoder()
-    st.session_state.encoder.fit(["left", "center", "right"])
-    st.session_state.model = XGBClassifier(use_label_encoder=False, eval_metric='mlogloss')
-    st.session_state.success_count = 0
-    st.session_state.total_shots = 0
-    st.session_state.ai_suggestion = ""
-    st.session_state.prediction_result = ""
-    st.session_state.pending_direction = None
-    st.session_state.last_probs = None
+# Initialize session states
+if 'kick_history' not in st.session_state:
+    st.session_state.kick_history = []  # lưu 3 lượt gần nhất
+if 'model' not in st.session_state:
+    st.session_state.model = None
+if 'label_enc' not in st.session_state:
+    st.session_state.label_enc = LabelEncoder()
 
-# Gợi ý từ AI
-def smart_kick_xgb():
-    if len(st.session_state.kick_history) < 4:
-        return random.choice(["left", "center", "right"]), None
+# Tạo fake dữ liệu ban đầu để model không lỗi
+if 'df' not in st.session_state:
+    st.session_state.df = pd.DataFrame(columns=['kick', 'goalkeeper', 'result'])
 
-    try:
-        kicks = list(st.session_state.kick_history)[-3:]
-        jumps = list(st.session_state.goalie_jump_history)[-3:]
-        if len(kicks) < 3 or len(jumps) < 3:
-            return random.choice(["left", "center", "right"]), None
+# Giao diện
+st.title("1. Bạn chọn hướng sút:")
+kick = st.radio("", ['Trái', 'Giữa', 'Phải'])
 
-        input_feature = [kicks + jumps]
-        probs = st.session_state.model.predict_proba(input_feature)[0]
-        max_index = np.argmax(probs)
-        likely_jump = st.session_state.encoder.inverse_transform([max_index])[0]
-        options = {"left", "center", "right"} - {likely_jump}
-        return random.choice(list(options)), probs
-    except Exception as e:
-        return random.choice(["left", "center", "right"]), None
+st.title("2. Thủ môn nhảy hướng nào?")
+goalkeeper = st.radio("", ['Trái', 'Giữa', 'Phải'])
 
-# B1: Chọn hướng sút
-st.markdown("### 1. Bạn chọn hướng sút:")
-cols = st.columns(3)
-direction = None
-if cols[0].button("⬅️ Trái"):
-    direction = "left"
-if cols[1].button("⬆️ Giữa"):
-    direction = "center"
-if cols[2].button("➡️ Phải"):
-    direction = "right"
+# Xử lý kết quả
+result = "Ghi bàn" if kick != goalkeeper else "Bị cản phá"
 
-if direction:
-    st.session_state.pending_direction = direction
+# Lưu lịch sử
+st.session_state.kick_history.append((kick, goalkeeper, result))
+if len(st.session_state.kick_history) > 3:
+    st.session_state.kick_history.pop(0)
 
-# B2: Hướng thủ môn nhảy
-if st.session_state.pending_direction:
-    st.markdown("### 2. Thủ môn nhảy hướng nào?")
-    gcols = st.columns(3)
-    goalie_dir = None
-    if gcols[0].button("🧤 Trái"):
-        goalie_dir = "left"
-    if gcols[1].button("🧤 Giữa"):
-        goalie_dir = "center"
-    if gcols[2].button("🧤 Phải"):
-        goalie_dir = "right"
+# Lưu vào dataframe học
+new_data = pd.DataFrame([[kick, goalkeeper, result]], columns=['kick', 'goalkeeper', 'result'])
+st.session_state.df = pd.concat([st.session_state.df, new_data], ignore_index=True)
 
-    if goalie_dir:
-        kick_num = st.session_state.encoder.transform([st.session_state.pending_direction])[0]
-        goalie_num = st.session_state.encoder.transform([goalie_dir])[0]
-        st.session_state.kick_history.append(kick_num)
-        st.session_state.goalie_jump_history.append(goalie_num)
+st.success(f"{result}! (Sút: {kick}, Thủ môn: {goalkeeper})")
 
-        # Huấn luyện nếu đủ data
-        if len(st.session_state.kick_history) >= 6:
-            X, y = [], []
-            for i in range(3, len(st.session_state.kick_history)):
-                X.append(
-                    list(st.session_state.kick_history)[i-3:i] +
-                    list(st.session_state.goalie_jump_history)[i-3:i]
-                )
-                y.append(st.session_state.goalie_jump_history[i])
-            st.session_state.model.fit(X, y)
+# Encode dữ liệu
+def encode_data(df):
+    df_encoded = df.copy()
+    for col in ['kick', 'goalkeeper', 'result']:
+        df_encoded[col] = st.session_state.label_enc.fit_transform(df[col])
+    return df_encoded
 
-        # Kết quả
-        if st.session_state.pending_direction == goalie_dir:
-            st.session_state.result = f"❌ Bị bắt! Thủ môn nhảy đúng hướng: {goalie_dir}"
-            st.session_state.prediction_result = "Sai dự đoán"
-        else:
-            st.session_state.result = f"✅ Ghi bàn! Thủ môn nhảy sang {goalie_dir}"
-            st.session_state.success_count += 1
-            st.session_state.prediction_result = "Đúng dự đoán"
+# Train model nếu có ít nhất 5 dòng
+if len(st.session_state.df) >= 5:
+    data = encode_data(st.session_state.df)
+    X = data[['goalkeeper']]
+    y = data['kick']
+    
+    model = XGBClassifier(use_label_encoder=False, eval_metric='mlogloss')
+    model.fit(X, y)
+    st.session_state.model = model
 
-        st.session_state.total_shots += 1
-
-        # Gợi ý
-        st.session_state.ai_suggestion, st.session_state.last_probs = smart_kick_xgb()
-        st.session_state.pending_direction = None
-
-# Hiển thị kết quả lượt chơi
-if st.session_state.result:
-    st.info(st.session_state.result)
-    st.markdown(f"**Dự đoán của AI:** {st.session_state.prediction_result}")
-
-# Gợi ý AI
-st.markdown("---")
-st.subheader("Gợi ý từ AI (cho lượt kế tiếp):")
-if st.session_state.ai_suggestion:
-    st.success(f"**Nên sút về: {st.session_state.ai_suggestion.upper()}**")
-    if st.session_state.last_probs is not None:
-        st.write(f"**Xác suất thủ môn nhảy:**")
-        st.write(f"🔹 Trái: {st.session_state.last_probs[0] * 100:.2f}%")
-        st.write(f"🔹 Giữa: {st.session_state.last_probs[1] * 100:.2f}%")
-        st.write(f"🔹 Phải: {st.session_state.last_probs[2] * 100:.2f}%")
-
-# Tỷ lệ thành công
-if st.session_state.total_shots > 0:
-    acc = 100 * st.session_state.success_count / st.session_state.total_shots
-    st.markdown(f"**Tỷ lệ sút thành công:** `{acc:.2f}%`")
-
-# Lịch sử
-st.markdown("### Lịch sử lượt chơi:")
-if st.session_state.kick_history:
-    st.write("Hướng sút:", list(st.session_state.encoder.inverse_transform(st.session_state.kick_history)))
-    st.write("Thủ môn nhảy:", list(st.session_state.encoder.inverse_transform(st.session_state.goalie_jump_history)))
-else:
-    st.write("*Chưa có dữ liệu.*")
-
-# Reset
-if st.button("🔄 Reset game"):
-    st.session_state.kick_history.clear()
-    st.session_state.goalie_jump_history.clear()
-    st.session_state.result = ""
-    st.session_state.success_count = 0
-    st.session_state.total_shots = 0
-    st.session_state.ai_suggestion = ""
-    st.session_state.prediction_result = ""
-    st.session_state.pending_direction = None
-    st.session_state.model = XGBClassifier(use_label_encoder=False, eval_metric='mlogloss')
+# Dự đoán lượt tiếp theo
+if st.session_state.model:
+    current_goalkeeper_move = st.selectbox("Dự đoán thủ môn sẽ nhảy hướng nào?", ['Trái', 'Giữa', 'Phải'])
+    move_encoded = st.session_state.label_enc.transform([current_goalkeeper_move])[0]
+    
+    pred = st.session_state.model.predict([[move_encoded]])[0]
+    pred_label = st.session_state.label_enc.inverse_transform([pred])[0]
+    
+    st.header("Gợi ý từ AI (cho lượt kế tiếp):")
+    st.success(f"Nên sút về: {pred_label}")
